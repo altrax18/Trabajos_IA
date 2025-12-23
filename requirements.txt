@@ -1,9 +1,0 @@
-numpy
-pandas
-matplotlib
-scikit-learn
-plotnine
-jupyter
-jupyterlab
-ipykernel
-xgboost
