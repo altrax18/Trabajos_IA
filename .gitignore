@@ -1,0 +1,32 @@
+# Entornos virtuales
+venv/
+.env/
+.env
+.venv/
+
+# Archivos de configuración de entorno
+*.env
+
+# Archivos de Python compilados
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Archivos de Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Archivos de logs
+*.log
+
+# Archivos de usuario de VSCode
+.vscode/
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
+
+# Salidas de Jupyter
+*.nbconvert.ipynb
+
+# Archivos de dependencias
+pip-wheel-metadata/
