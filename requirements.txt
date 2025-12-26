@@ -1,0 +1,9 @@
+langgraph
+langchain-cohere
+langchain-core
+pydantic
+python-dotenv
+gradio
+ipython
+langchain-community
+fpdf2
