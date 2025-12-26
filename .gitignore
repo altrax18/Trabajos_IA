@@ -30,3 +30,6 @@ Thumbs.db
 
 # Archivos de dependencias
 pip-wheel-metadata/
+
+# Archivos pdf
+*.pdf
