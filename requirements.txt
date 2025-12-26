@@ -32,6 +32,8 @@ fastavro==1.12.1
 fastjsonschema==2.21.2
 ffmpy==1.0.0
 filelock==3.20.1
+fonttools==4.61.1
+fpdf2==2.8.5
 fqdn==1.5.1
 frozenlist==1.8.0
 fsspec==2025.12.0
