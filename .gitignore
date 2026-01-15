@@ -33,3 +33,5 @@ pip-wheel-metadata/
 
 # Archivos pdf
 *.pdf
+
+.gradio
