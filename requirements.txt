@@ -1,0 +1,8 @@
+mcp
+fastapi
+uvicorn
+httpx
+langgraph
+langchain-openai
+streamlit
+python-dotenv

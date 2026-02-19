@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "setlist-architect": {
+      "command": "python",
+      "args": [
+        "c:\\Users\\sabax\\OneDrive\\Desktop\\Trabajo_IA\\Trabajos_IA\\server.py"
+      ]
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "c:\\Users\\sabax\\OneDrive\\Desktop\\Trabajo_IA\\Trabajos_IA"
+      ]
+    }
+  }
+}
