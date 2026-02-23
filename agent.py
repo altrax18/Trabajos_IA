@@ -87,24 +87,37 @@ async def run_agent(genero: str, vibe: str):
                 return {"canciones_encontradas": canciones_list}
 
             async def enriquecer_step(state: AgentState):
-                print("--- ENRIQUECIENDO CON BPM ---")
-                enriquecidas = []
+                print("--- ENRIQUECIENDO CON BPM (batch) ---")
+                canciones = []
                 for cancion in state['canciones_encontradas']:
-                    # Asegurar que cancion es dict (LangGraph puede serializar a str)
                     if isinstance(cancion, str):
                         cancion = json.loads(cancion)
-                    try:
-                        bpm_data = await session.call_tool("analizar_bpm", arguments={
-                            "cancion_id": cancion['id'],
-                            "titulo": cancion.get('titulo', ''),
-                            "artista": cancion.get('artista', '')
-                        })
-                        bpm_dict = json.loads(bpm_data.content[0].text)
-                        nueva_cancion = {**cancion, **bpm_dict}
-                        enriquecidas.append(nueva_cancion)
-                    except Exception as e:
-                        print(f"Error analizando {cancion.get('titulo', '?')}: {e}")
+                    canciones.append(cancion)
+                
+                # Una sola llamada para todas las canciones
+                try:
+                    result = await session.call_tool("analizar_bpm_batch", arguments={"canciones": canciones})
+                    bpm_list = []
+                    for item in result.content:
+                        parsed = json.loads(item.text)
+                        if isinstance(parsed, list):
+                            bpm_list.extend(parsed)
+                        else:
+                            bpm_list.append(parsed)
+                    
+                    # Mapear BPMs por título
+                    bpm_map = {b.get("titulo", "").lower(): b for b in bpm_list}
+                    enriquecidas = []
+                    for cancion in canciones:
+                        titulo_lower = cancion.get("titulo", "").lower()
+                        if titulo_lower in bpm_map:
+                            cancion["bpm"] = bpm_map[titulo_lower].get("bpm", 0)
+                            cancion["key"] = bpm_map[titulo_lower].get("key", "Unknown")
                         enriquecidas.append(cancion)
+                    print(f"  BPM estimado para {len(bpm_list)} canciones")
+                except Exception as e:
+                    print(f"  Error en batch BPM: {e}")
+                    enriquecidas = canciones
                 
                 # Filtrar outliers de BPM: mantener canciones dentro de ±25 BPM de la mediana
                 con_bpm = [c for c in enriquecidas if c.get('bpm', 0) > 0]
@@ -117,7 +130,6 @@ async def run_agent(genero: str, vibe: str):
                     descartadas = len(con_bpm) - len(filtradas)
                     if descartadas > 0:
                         print(f"  Filtrado BPM: mediana={mediana}, descartadas {descartadas} canciones fuera de rango")
-                    # Ordenar por BPM para transiciones suaves
                     filtradas.sort(key=lambda c: c['bpm'])
                     enriquecidas = filtradas + sin_bpm
                     print(f"  Canciones tras filtro: {len(enriquecidas)}")

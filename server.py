@@ -180,6 +180,54 @@ def analizar_bpm(cancion_id: str, titulo: str = "", artista: str = "") -> dict:
 
     return {"bpm": 0, "key": "Unknown"}
 
+@mcp.tool()
+def analizar_bpm_batch(canciones: List[dict]) -> List[dict]:
+    """
+    Analiza BPM y tonalidad de TODAS las canciones en una sola llamada usando Cohere.
+    Mucho más rápido que llamar analizar_bpm una por una.
+    Args:
+        canciones: Lista de dicts con al menos 'titulo' y 'artista'.
+    Returns:
+        Lista de dicts con 'titulo', 'bpm' y 'key' para cada canción.
+    """
+    import re
+    api_key = os.getenv("COHERE_API_KEY")
+    if not api_key:
+        return [{"titulo": c.get("titulo", ""), "bpm": 0, "key": "Unknown"} for c in canciones]
+
+    lista_canciones = "\n".join(
+        [f"- {c.get('titulo', '?')} de {c.get('artista', '?')}" for c in canciones]
+    )
+    prompt_msg = (
+        f"Para cada cancion de la siguiente lista, estima el BPM (tempo) y la tonalidad musical.\n"
+        f"Lista:\n{lista_canciones}\n\n"
+        f"Responde SOLO con un JSON array, un objeto por cancion, en el mismo orden. "
+        f'Formato: [{{"titulo": "nombre", "bpm": 120, "key": "C"}}]. '
+        f"BPM debe ser un numero entero realista. Key debe ser la nota (ej: C, Am, F#m, Bb)."
+    )
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                "https://api.cohere.com/v1/chat",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "message": prompt_msg,
+                    "model": "command-r-08-2024",
+                    "temperature": 0.2,
+                },
+            )
+            response.raise_for_status()
+        data = response.json()
+        text = data.get("text", "")
+        match = re.search(r'\[.*\]', text, re.DOTALL)
+        if match:
+            parsed = json.loads(match.group())
+            if isinstance(parsed, list):
+                return parsed
+    except Exception:
+        pass
+    return [{"titulo": c.get("titulo", ""), "bpm": 0, "key": "Unknown"} for c in canciones]
+
 # Requisito 2 (real): Tool que consume API externa gratuita (iTunes)
 @mcp.tool()
 def buscar_canciones_api_externa(termino: str, limite: int = 5) -> List[dict]:
