@@ -1,7 +1,21 @@
 import streamlit as st
 import asyncio
 import os
+import sys
 from agent import run_agent
+
+
+def _run_agent_safely(genero: str, vibe: str):
+    """
+    Ejecuta el agente MCP de forma segura dentro de Streamlit.
+    Crea un event loop nuevo para evitar conflictos con el loop de Streamlit.
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(run_agent(genero, vibe))
+    finally:
+        loop.close()
 
 # Configuración de la página
 st.set_page_config(page_title="Setlist Architect MCP", page_icon="🎵")
@@ -38,10 +52,8 @@ if st.button("🎛️ Generar Setlist", type="primary"):
         status_text.write("🚀 Iniciando agente... conectando a servidor MCP...")
         
         try:
-            # Ejecutar el agente asíncronamente
-            # Streamlit corre en un loop de eventos propio, asyncio.run puede dar conflictos si ya hay loop.
-            # Pero normalmente en script top-level de streamlit está bien.
-            final_state = asyncio.run(run_agent(genero, vibe))
+            # Ejecutar el agente de forma segura (parcheando stderr para MCP stdio)
+            final_state = _run_agent_safely(genero, vibe)
             
             # Mostrar resultados
             status_text.success("¡Setlist generado con éxito!")

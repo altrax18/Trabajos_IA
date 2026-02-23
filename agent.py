@@ -1,4 +1,6 @@
 import asyncio
+import json
+import os
 import sys
 from pathlib import Path
 from typing import TypedDict, List
@@ -16,11 +18,6 @@ class AgentState(TypedDict):
     setlist_final: List[dict]
     archivo_guardado: str
 
-import sys
-from pathlib import Path
-
-# ... (imports remain)
-
 # Configuración del servidor MCP Local (stdio)
 # Usamos sys.executable para asegurar que usamos el mismo entorno virtual/interpreter que el agente
 # Usamos path absoluto para server.py para evitar problemas de directorio de trabajo
@@ -32,13 +29,27 @@ server_params = StdioServerParameters(
     env=None
 )
 
+def _get_safe_errlog():
+    """
+    Devuelve un file object seguro para usar como errlog en stdio_client.
+    Streamlit reemplaza sys.stderr con un objeto sin fileno(), lo que rompe
+    subprocess.Popen. Usamos os.devnull como fallback seguro.
+    """
+    try:
+        sys.stderr.fileno()
+        return sys.stderr
+    except Exception:
+        return open(os.devnull, "w")
+
 async def run_agent(genero: str, vibe: str):
     """
     Función principal que orquesta el flujo usando LangGraph y conecta al servidor MCP.
     """
     
     # 1. Conexión al servidor MCP
-    async with stdio_client(server_params) as (read, write):
+    # Pasamos un errlog seguro para evitar crash en Streamlit
+    errlog = _get_safe_errlog()
+    async with stdio_client(server_params, errlog=errlog) as (read, write):
         async with ClientSession(read, write) as session:
             # Inicializar herramientas disponibles
             await session.initialize()
@@ -48,14 +59,13 @@ async def run_agent(genero: str, vibe: str):
             async def buscar_step(state: AgentState):
                 print(f"--- BUSCANDO CANCIONES DE {state['genero']} ---")
                 try:
-                    # Llamada a tool MCP: buscar_canciones
                     result = await session.call_tool("buscar_canciones", arguments={"genero": state['genero']})
-                    # El resultado de call_tool suele venir en una estructura content/isError
-                    canciones = result.content[0].text
-                    # Parseamos si viene como string JSON, si no, asumimos que es el objeto directo (depende de implementación SDK)
-                    # En FastMCP stdio, el retorno suele ser JSON stringificado en text
-                    import json
-                    canciones_list = json.loads(canciones)
+                    # FastMCP serializa List[dict] como múltiples TextContent (uno por dict)
+                    canciones_list = []
+                    for item in result.content:
+                        canciones_list.append(json.loads(item.text))
+                    
+                    print(f"  Encontradas: {len(canciones_list)} canciones")
                     return {"canciones_encontradas": canciones_list}
                 except Exception as e:
                     print(f"Error en buscar_canciones: {e}")
@@ -65,37 +75,38 @@ async def run_agent(genero: str, vibe: str):
                 print("--- ENRIQUECIENDO CON BPM ---")
                 enriquecidas = []
                 for cancion in state['canciones_encontradas']:
+                    # Asegurar que cancion es dict (LangGraph puede serializar a str)
+                    if isinstance(cancion, str):
+                        cancion = json.loads(cancion)
                     try:
-                        # Llamada a tool MCP: analizar_bpm
                         bpm_data = await session.call_tool("analizar_bpm", arguments={"cancion_id": cancion['id']})
-                        import json
                         bpm_dict = json.loads(bpm_data.content[0].text)
-                        
-                        # Combinamos datos
                         nueva_cancion = {**cancion, **bpm_dict}
                         enriquecidas.append(nueva_cancion)
                     except Exception as e:
-                        print(f"Error analizando {cancion.get('titulo')}: {e}")
+                        print(f"Error analizando {cancion.get('titulo', '?')}: {e}")
                         enriquecidas.append(cancion)
                 return {"canciones_enriquecidas": enriquecidas}
 
             async def curar_step(state: AgentState):
                 print(f"--- CURANDO LISTA CON VIBE: {state['vibe']} ---")
                 try:
-                    # Llamada a tool MCP: curador_musical
-                    # Pasamos la lista enriquecida y el vibe
-                    # Nota: Pasar objetos complejos puede requerir serialización dependiendo del SDK
-                    # Aquí pasamos la lista directa, FastMCP debería manejarlo
                     result = await session.call_tool("curador_musical", arguments={
                         "canciones": state['canciones_enriquecidas'], 
                         "vibe": state['vibe']
                     })
-                    import json
-                    curada = json.loads(result.content[0].text)
+                    # Parsear respuesta: puede ser un solo content o múltiples
+                    curada = []
+                    for item in result.content:
+                        parsed = json.loads(item.text)
+                        if isinstance(parsed, list):
+                            curada.extend(parsed)
+                        else:
+                            curada.append(parsed)
                     return {"setlist_final": curada}
                 except Exception as e:
                     print(f"Error curando lista: {e}")
-                    return {"setlist_final": state['canciones_enriquecidas']} # Fallback
+                    return {"setlist_final": state['canciones_enriquecidas']}
 
             async def guardar_step(state: AgentState):
                 print("--- GUARDANDO ARCHIVO .M3U ---")
