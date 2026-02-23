@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import json
 import os
 import re
@@ -8,156 +9,182 @@ from mcp.server.fastmcp import FastMCP
 
 load_dotenv(find_dotenv())
 
-# Configuración del servidor MCP
 mcp = FastMCP("Setlist Architect Music Server")
 
-
-# Tool 1: Buscar canciones en iTunes (API externa gratuita)
+# ==============================
+# TOOL 1: Buscar canciones iTunes
+# ==============================
 @mcp.tool()
 def buscar_canciones_api_externa(termino: str, limite: int = 5) -> List[dict]:
-    """
-    Busca canciones reales usando la API pública de iTunes (sin API key).
-    Args:
-        termino: Término de búsqueda (artista, canción o género).
-        limite: Número máximo de resultados.
-    Returns:
-        Lista de canciones con campos básicos.
-    """
     url = "https://itunes.apple.com/search"
     params = {"term": termino, "media": "music", "limit": int(limite)}
+
     try:
         with httpx.Client(timeout=10.0) as client:
             response = client.get(url, params=params)
             response.raise_for_status()
+
         data = response.json()
-        results = []
+        unique = {}
+
         for item in data.get("results", []):
-            results.append(
-                {
+            titulo = item.get("trackName", "")
+            artista = item.get("artistName", "")
+            clave = (titulo.lower(), artista.lower())
+
+            if clave not in unique:
+                nombre_archivo = f"{titulo} - {artista}.m4a"
+                nombre_archivo = re.sub(r'[\\/*?:"<>|]', "", nombre_archivo)
+
+                unique[clave] = {
                     "track_id": str(item.get("trackId", "")),
-                    "titulo": item.get("trackName", ""),
-                    "artista": item.get("artistName", ""),
+                    "titulo": titulo,
+                    "artista": artista,
                     "album": item.get("collectionName", ""),
                     "preview_url": item.get("previewUrl", ""),
+                    "nombre_archivo": nombre_archivo,
                 }
-            )
-        return results
-    except Exception:
+
+        return list(unique.values())
+
+    except Exception as e:
+        print("ERROR ITUNES:", e)
         return []
 
 
-# Tool 2: Analizar BPM y tonalidad en batch usando Cohere LLM
+# ==============================
+# TOOL 2: Analizar BPM (Cohere v2)
+# ==============================
 @mcp.tool()
 def analizar_bpm_batch(canciones: List[dict]) -> List[dict]:
-    """
-    Analiza BPM y tonalidad de TODAS las canciones en una sola llamada usando Cohere.
-    Args:
-        canciones: Lista de dicts con al menos 'titulo' y 'artista'.
-    Returns:
-        Lista de dicts con 'titulo', 'bpm' y 'key' para cada canción.
-    """
     api_key = os.getenv("COHERE_API_KEY")
+
     if not api_key:
         return [{"titulo": c.get("titulo", ""), "bpm": 0, "key": "Unknown"} for c in canciones]
 
     lista_canciones = "\n".join(
         [f"- {c.get('titulo', '?')} de {c.get('artista', '?')}" for c in canciones]
     )
+
     prompt_msg = (
-        f"Para cada cancion de la siguiente lista, estima el BPM (tempo) y la tonalidad musical.\n"
-        f"Lista:\n{lista_canciones}\n\n"
-        f"Responde SOLO con un JSON array, un objeto por cancion, en el mismo orden. "
-        f'Formato: [{{"titulo": "nombre", "bpm": 120, "key": "C"}}]. '
-        f"BPM debe ser un numero entero realista. Key debe ser la nota (ej: C, Am, F#m, Bb)."
+        f"Para cada canción de la siguiente lista, estima un BPM realista "
+        f"(entre 80 y 180) y su tonalidad musical.\n\n"
+        f"{lista_canciones}\n\n"
+        f"Devuelve SOLO un JSON array como este ejemplo:\n"
+        f'[{{"titulo":"nombre","bpm":128,"key":"Am"}}]\n'
+        f"Cada canción debe tener valores distintos y coherentes."
     )
+
     try:
         with httpx.Client(timeout=30.0) as client:
             response = client.post(
-                "https://api.cohere.com/v1/chat",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                "https://api.cohere.com/v2/chat",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
                 json={
-                    "message": prompt_msg,
-                    "model": "command-r-08-2024",
-                    "temperature": 0.2,
+                    "model": "command-r7b-12-2024",
+                    "messages": [
+                        {"role": "user", "content": prompt_msg}
+                    ],
+                    "temperature": 0.5,
                 },
             )
             response.raise_for_status()
+
         data = response.json()
-        text = data.get("text", "")
+
+        content_blocks = data.get("message", {}).get("content", [])
+        text = ""
+
+        for block in content_blocks:
+            if block.get("type") == "text":
+                text += block.get("text", "")
+
         match = re.search(r'\[.*\]', text, re.DOTALL)
         if match:
             parsed = json.loads(match.group())
             if isinstance(parsed, list):
                 return parsed
-    except Exception:
-        pass
+
+    except Exception as e:
+        print("ERROR BPM:", e)
+
     return [{"titulo": c.get("titulo", ""), "bpm": 0, "key": "Unknown"} for c in canciones]
 
 
-# Tool 3: Curador musical con LLM (Cohere) para ordenar el setlist
+# ==============================
+# TOOL 3: Curador musical (Cohere v2)
+# ==============================
 def _curar_con_llm(canciones: List[dict], vibe: str) -> List[dict]:
-    """
-    Usa Cohere para ordenar una lista de canciones segun el vibe.
-    Requiere COHERE_API_KEY en .env
-    """
     api_key = os.getenv("COHERE_API_KEY")
+
     if not api_key:
         return canciones
 
-    prompt = {
-        "message": "Ordena la lista de canciones segun el vibe indicado y devuelve solo los IDs en orden.",
-        "preamble": "Eres un curador musical experto. Responde solo con una lista JSON de IDs en orden.",
-        "model": "command-r-08-2024",
-        "temperature": 0.3,
-        "chat_history": [],
-        "documents": [],
-        "response_format": {"type": "json_object"},
-        "input": {
-            "vibe": vibe,
-            "canciones": [{"id": c.get("id"), "titulo": c.get("titulo"), "artista": c.get("artista")} for c in canciones],
-        },
-    }
+    prompt_msg = (
+        f"Ordena la siguiente lista de canciones según el vibe '{vibe}'. "
+        f"Devuelve SOLO un JSON array con los track_id en orden.\n\n"
+        f"{json.dumps(canciones, ensure_ascii=False)}"
+    )
 
     try:
         with httpx.Client(timeout=20.0) as client:
             response = client.post(
-                "https://api.cohere.com/v1/chat",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json=prompt,
+                "https://api.cohere.com/v2/chat",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "command-r7b-12-2024",
+                    "messages": [
+                        {"role": "user", "content": prompt_msg}
+                    ],
+                    "temperature": 0.3,
+                },
             )
             response.raise_for_status()
+
         data = response.json()
-        text = data.get("text") or data.get("message") or ""
-        ids = []
-        try:
-            parsed = json.loads(text)
-            ids = parsed.get("ids", []) if isinstance(parsed, dict) else parsed
-        except Exception:
-            ids = []
 
-        if not ids:
-            return canciones
+        content_blocks = data.get("message", {}).get("content", [])
+        text = ""
 
-        id_map = {str(c.get("id")): c for c in canciones}
-        ordered = [id_map[i] for i in ids if str(i) in id_map]
-        if len(ordered) != len(canciones):
-            remaining = [c for c in canciones if str(c.get("id")) not in {str(i) for i in ids}]
-            ordered.extend(remaining)
-        return ordered
-    except Exception:
-        return canciones
+        for block in content_blocks:
+            if block.get("type") == "text":
+                text += block.get("text", "")
+
+        match = re.search(r'\[.*\]', text, re.DOTALL)
+        if match:
+            ids = json.loads(match.group())
+            id_map = {str(c.get("track_id")): c for c in canciones}
+            ordered = [id_map[i] for i in ids if i in id_map]
+
+            if len(ordered) != len(canciones):
+                remaining = [c for c in canciones if str(c.get("track_id")) not in ids]
+                ordered.extend(remaining)
+
+            return ordered
+
+    except Exception as e:
+        print("ERROR CURADOR:", e)
+
+    return canciones
 
 
 @mcp.tool()
 def curador_musical(canciones: List[dict], vibe: str) -> List[dict]:
-    """
-    Ordena canciones usando un LLM (Cohere).
-    Requiere COHERE_API_KEY en .env
-    """
     return _curar_con_llm(canciones, vibe)
 
+
+# ==============================
+# TRANSPORTES
+# ==============================
 if __name__ == "__main__":
     import sys
+
     if "http" in sys.argv:
         print("Iniciando servidor MCP streamable-http en puerto 8000...")
         mcp.run(transport="streamable-http")
