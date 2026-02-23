@@ -105,24 +105,80 @@ def _key_name(key: int, mode: int) -> str:
     sufijo = "m" if int(mode) == 0 else ""
     return f"{nota}{sufijo}"
 
+def _estimar_bpm_con_llm(titulo: str, artista: str) -> dict:
+    """
+    Fallback: usa Cohere para estimar BPM y tonalidad cuando Spotify no está disponible.
+    """
+    api_key = os.getenv("COHERE_API_KEY")
+    if not api_key:
+        return {}
+
+    prompt_msg = (
+        f"Para la canción '{titulo}' de '{artista}', estima el BPM (tempo) y la tonalidad musical. "
+        f"Responde SOLO con un JSON exacto con este formato: "
+        f'{{"bpm": 120, "key": "C"}}'
+        f" donde bpm es un número entero y key es la nota musical (ej: C, Am, F#, Dm)."
+    )
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            response = client.post(
+                "https://api.cohere.com/v1/chat",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "message": prompt_msg,
+                    "model": "command-r-08-2024",
+                    "temperature": 0.2,
+                },
+            )
+            response.raise_for_status()
+        data = response.json()
+        text = data.get("text", "")
+        # Extraer JSON del texto
+        import re
+        match = re.search(r'\{[^}]+\}', text)
+        if match:
+            parsed = json.loads(match.group())
+            bpm = int(parsed.get("bpm", 0))
+            key = str(parsed.get("key", "Unknown"))
+            if bpm > 0:
+                return {"bpm": bpm, "key": key}
+    except Exception:
+        pass
+    return {}
+
+
 # Requisito 2 (real): Tool de analisis BPM y tonalidad usando Spotify
 @mcp.tool()
-def analizar_bpm(cancion_id: str) -> dict:
+def analizar_bpm(cancion_id: str, titulo: str = "", artista: str = "") -> dict:
     """
     Analiza BPM y tonalidad usando Spotify Audio Features.
-    Requiere SPOTIFY_CLIENT_ID y SPOTIFY_CLIENT_SECRET en .env
+    Si Spotify no está disponible, usa Cohere LLM como fallback.
+    Args:
+        cancion_id: ID de la canción (puede ser de la BD local o de iTunes).
+        titulo: Título de la canción (usado si no se encuentra en la BD local).
+        artista: Artista de la canción (usado si no se encuentra en la BD local).
     """
+    # Buscar en BD local; si no está, usar titulo/artista proporcionados
     cancion = next((c for c in DB_CANCIONES if c["id"] == str(cancion_id)), None)
-    if not cancion:
+    search_titulo = cancion["titulo"] if cancion else titulo
+    search_artista = cancion["artista"] if cancion else artista
+
+    if not search_titulo:
         return {"bpm": 0, "key": "Unknown"}
 
-    audio = _spotify_track_and_audio(cancion["titulo"], cancion["artista"])
-    if not audio:
-        return {"bpm": 0, "key": "Unknown"}
+    # Intento 1: Spotify Audio Features
+    audio = _spotify_track_and_audio(search_titulo, search_artista)
+    if audio and audio.get("tempo"):
+        bpm = round(audio.get("tempo", 0))
+        key = _key_name(int(audio.get("key", -1)), int(audio.get("mode", -1)))
+        return {"bpm": bpm, "key": key}
 
-    bpm = round(audio.get("tempo", 0)) if audio.get("tempo") is not None else 0
-    key = _key_name(int(audio.get("key", -1)), int(audio.get("mode", -1)))
-    return {"bpm": bpm, "key": key}
+    # Intento 2: Estimación con Cohere LLM (fallback)
+    estimacion = _estimar_bpm_con_llm(search_titulo, search_artista)
+    if estimacion:
+        return estimacion
+
+    return {"bpm": 0, "key": "Unknown"}
 
 # Requisito 2 (real): Tool que consume API externa gratuita (iTunes)
 @mcp.tool()
@@ -208,7 +264,7 @@ def _curar_con_llm(canciones: List[dict], vibe: str) -> List[dict]:
     prompt = {
         "message": "Ordena la lista de canciones segun el vibe indicado y devuelve solo los IDs en orden.",
         "preamble": "Eres un curador musical experto. Responde solo con una lista JSON de IDs en orden.",
-        "model": "command-r",
+        "model": "command-r-08-2024",
         "temperature": 0.3,
         "chat_history": [],
         "documents": [],

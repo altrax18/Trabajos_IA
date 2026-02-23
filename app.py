@@ -65,8 +65,16 @@ if st.button("🎛️ Generar Setlist", type="primary"):
                 st.error("No se encontraron canciones o hubo un error en el proceso.")
             else:
                 for i, c in enumerate(canciones, 1):
-                    st.markdown(f"**{i}. {c['titulo']}** - {c['artista']}")
-                    st.caption(f"BPM: {c.get('bpm', 'N/A')} | Key: {c.get('key', 'N/A')} | Género: {c['genero']}")
+                    col_info, col_audio = st.columns([3, 2])
+                    with col_info:
+                        st.markdown(f"**{i}. {c['titulo']}** - {c['artista']}")
+                        st.caption(f"BPM: {c.get('bpm', 'N/A')} | Key: {c.get('key', 'N/A')} | Género: {c['genero']}")
+                    with col_audio:
+                        preview_url = c.get('preview_url', '')
+                        if preview_url:
+                            st.audio(preview_url, format="audio/mp4")
+                        else:
+                            st.caption("🔇 Sin preview disponible")
                 
                 st.divider()
                 st.success(f"Archivo guardado en: `{final_state.get('archivo_guardado')}`")

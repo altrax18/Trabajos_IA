@@ -58,18 +58,33 @@ async def run_agent(genero: str, vibe: str):
             
             async def buscar_step(state: AgentState):
                 print(f"--- BUSCANDO CANCIONES DE {state['genero']} ---")
+                canciones_list = []
+                
+                # Buscar en iTunes según género + vibe
                 try:
-                    result = await session.call_tool("buscar_canciones", arguments={"genero": state['genero']})
-                    # FastMCP serializa List[dict] como múltiples TextContent (uno por dict)
-                    canciones_list = []
+                    search_term = f"{state['genero']} {state['vibe']}"
+                    result = await session.call_tool("buscar_canciones_api_externa", arguments={"termino": search_term, "limite": 10})
+                    itunes_raw = []
                     for item in result.content:
-                        canciones_list.append(json.loads(item.text))
+                        parsed = json.loads(item.text)
+                        if isinstance(parsed, list):
+                            itunes_raw.extend(parsed)
+                        else:
+                            itunes_raw.append(parsed)
                     
-                    print(f"  Encontradas: {len(canciones_list)} canciones")
-                    return {"canciones_encontradas": canciones_list}
+                    for idx, it_song in enumerate(itunes_raw):
+                        canciones_list.append({
+                            "id": f"itunes_{idx}",
+                            "titulo": it_song.get("titulo", ""),
+                            "artista": it_song.get("artista", ""),
+                            "genero": state['genero'],
+                            "preview_url": it_song.get("preview_url", ""),
+                        })
+                    print(f"  iTunes: {len(canciones_list)} resultados ('{search_term}')")
                 except Exception as e:
-                    print(f"Error en buscar_canciones: {e}")
-                    return {"canciones_encontradas": []}
+                    print(f"  Error en búsqueda iTunes: {e}")
+                
+                return {"canciones_encontradas": canciones_list}
 
             async def enriquecer_step(state: AgentState):
                 print("--- ENRIQUECIENDO CON BPM ---")
@@ -79,14 +94,68 @@ async def run_agent(genero: str, vibe: str):
                     if isinstance(cancion, str):
                         cancion = json.loads(cancion)
                     try:
-                        bpm_data = await session.call_tool("analizar_bpm", arguments={"cancion_id": cancion['id']})
+                        bpm_data = await session.call_tool("analizar_bpm", arguments={
+                            "cancion_id": cancion['id'],
+                            "titulo": cancion.get('titulo', ''),
+                            "artista": cancion.get('artista', '')
+                        })
                         bpm_dict = json.loads(bpm_data.content[0].text)
                         nueva_cancion = {**cancion, **bpm_dict}
                         enriquecidas.append(nueva_cancion)
                     except Exception as e:
                         print(f"Error analizando {cancion.get('titulo', '?')}: {e}")
                         enriquecidas.append(cancion)
+                
+                # Filtrar outliers de BPM: mantener canciones dentro de ±25 BPM de la mediana
+                con_bpm = [c for c in enriquecidas if c.get('bpm', 0) > 0]
+                sin_bpm = [c for c in enriquecidas if c.get('bpm', 0) == 0]
+                
+                if len(con_bpm) >= 3:
+                    bpms = sorted([c['bpm'] for c in con_bpm])
+                    mediana = bpms[len(bpms) // 2]
+                    filtradas = [c for c in con_bpm if abs(c['bpm'] - mediana) <= 25]
+                    descartadas = len(con_bpm) - len(filtradas)
+                    if descartadas > 0:
+                        print(f"  Filtrado BPM: mediana={mediana}, descartadas {descartadas} canciones fuera de rango")
+                    # Ordenar por BPM para transiciones suaves
+                    filtradas.sort(key=lambda c: c['bpm'])
+                    enriquecidas = filtradas + sin_bpm
+                    print(f"  Canciones tras filtro: {len(enriquecidas)}")
+                
                 return {"canciones_enriquecidas": enriquecidas}
+
+            async def preview_step(state: AgentState):
+                print("--- OBTENIENDO PREVIEW URLs DE iTUNES ---")
+                canciones_con_preview = []
+                for cancion in state['canciones_enriquecidas']:
+                    if isinstance(cancion, str):
+                        cancion = json.loads(cancion)
+                    # Si ya tiene preview_url (de iTunes en buscar_step), no refetch
+                    if cancion.get("preview_url"):
+                        print(f"  ✓ Preview ya disponible: {cancion.get('titulo')}")
+                        canciones_con_preview.append(cancion)
+                        continue
+                    try:
+                        query = f"{cancion.get('titulo', '')} {cancion.get('artista', '')}"
+                        result = await session.call_tool("buscar_canciones_api_externa", arguments={"termino": query, "limite": 1})
+                        itunes_results = []
+                        for item in result.content:
+                            parsed = json.loads(item.text)
+                            if isinstance(parsed, list):
+                                itunes_results.extend(parsed)
+                            else:
+                                itunes_results.append(parsed)
+                        if itunes_results and itunes_results[0].get("preview_url"):
+                            cancion["preview_url"] = itunes_results[0]["preview_url"]
+                            print(f"  ✓ Preview encontrado para: {cancion.get('titulo')}")
+                        else:
+                            cancion["preview_url"] = ""
+                            print(f"  ✗ Sin preview para: {cancion.get('titulo')}")
+                    except Exception as e:
+                        print(f"  Error buscando preview de {cancion.get('titulo', '?')}: {e}")
+                        cancion["preview_url"] = ""
+                    canciones_con_preview.append(cancion)
+                return {"canciones_enriquecidas": canciones_con_preview}
 
             async def curar_step(state: AgentState):
                 print(f"--- CURANDO LISTA CON VIBE: {state['vibe']} ---")
@@ -116,9 +185,14 @@ async def run_agent(genero: str, vibe: str):
                 nombre_archivo = f"setlist_{state['genero']}_{state['vibe'].replace(' ', '_')}.m3u"
                 contenido = "#EXTM3U\n"
                 for c in state['setlist_final']:
-                     # Formato M3U simple: #EXTINF:duracion,Artista - Titulo
+                     # Formato M3U: #EXTINF:duracion,Artista - Titulo
                     contenido += f"#EXTINF:-1,{c.get('artista')} - {c.get('titulo')} (BPM: {c.get('bpm', 'N/A')})\n"
-                    contenido += f"{c.get('titulo')}.mp3\n" # Simulación ruta archivo
+                    # Usar preview URL real de iTunes si está disponible
+                    preview = c.get('preview_url', '')
+                    if preview:
+                        contenido += f"{preview}\n"
+                    else:
+                        contenido += f"# Sin preview disponible: {c.get('titulo')}.mp3\n"
                 
                 try:
                     p = Path(nombre_archivo)
@@ -133,12 +207,14 @@ async def run_agent(genero: str, vibe: str):
             
             workflow.add_node("buscar", buscar_step)
             workflow.add_node("enriquecer", enriquecer_step)
+            workflow.add_node("preview", preview_step)
             workflow.add_node("curar", curar_step)
             workflow.add_node("guardar", guardar_step)
             
             workflow.add_edge(START, "buscar")
             workflow.add_edge("buscar", "enriquecer")
-            workflow.add_edge("enriquecer", "curar")
+            workflow.add_edge("enriquecer", "preview")
+            workflow.add_edge("preview", "curar")
             workflow.add_edge("curar", "guardar")
             workflow.add_edge("guardar", END)
             
