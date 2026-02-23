@@ -39,14 +39,14 @@ with st.sidebar:
 # Formulario de entrada
 col1, col2 = st.columns(2)
 with col1:
-    genero = st.selectbox("Selecciona un Género", ["Rock", "Pop", "Reggaeton", "Metal", "Soul"])
+    genero = st.text_input("Género musical", placeholder="Ej: Rock, Pop, Jazz, Techno, K-Pop...")
 with col2:
     vibe = st.text_input("Define el Vibe / Objetivo", placeholder="Ej: High Energy Workout, Chill Sunday...")
 
 # Botón de acción
 if st.button("🎛️ Generar Setlist", type="primary"):
-    if not vibe:
-        st.warning("Por favor define un 'vibe' para tu playlist.")
+    if not genero or not vibe:
+        st.warning("Por favor escribe un género y un vibe para tu playlist.")
     else:
         status_text = st.empty()
         status_text.write("🚀 Iniciando agente... conectando a servidor MCP...")

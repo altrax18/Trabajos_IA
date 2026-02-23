@@ -105,14 +105,14 @@ async def run_agent(genero: str, vibe: str):
                         else:
                             bpm_list.append(parsed)
                     
-                    # Mapear BPMs por título
-                    bpm_map = {b.get("titulo", "").lower(): b for b in bpm_list}
+                    # Mapear BPMs por posición (mismo orden que la petición)
                     enriquecidas = []
-                    for cancion in canciones:
-                        titulo_lower = cancion.get("titulo", "").lower()
-                        if titulo_lower in bpm_map:
-                            cancion["bpm"] = bpm_map[titulo_lower].get("bpm", 0)
-                            cancion["key"] = bpm_map[titulo_lower].get("key", "Unknown")
+                    for i, cancion in enumerate(canciones):
+                        if i < len(bpm_list):
+                            bpm_val = bpm_list[i].get("bpm", 0)
+                            key_val = bpm_list[i].get("key", "Unknown")
+                            cancion["bpm"] = int(bpm_val) if bpm_val else 0
+                            cancion["key"] = str(key_val) if key_val else "Unknown"
                         enriquecidas.append(cancion)
                     print(f"  BPM estimado para {len(bpm_list)} canciones")
                 except Exception as e:
