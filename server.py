@@ -56,24 +56,35 @@ def buscar_canciones_api_externa(termino: str, limite: int = 5) -> List[dict]:
 # TOOL 2: Analizar BPM (Cohere v2)
 # ==============================
 @mcp.tool()
+
+@mcp.tool()
 def analizar_bpm_batch(canciones: List[dict]) -> List[dict]:
     api_key = os.getenv("COHERE_API_KEY")
 
     if not api_key:
-        return [{"titulo": c.get("titulo", ""), "bpm": 0, "key": "Unknown"} for c in canciones]
+        return [{"bpm": 0, "key": "Unknown"} for _ in canciones]
 
     lista_canciones = "\n".join(
-        [f"- {c.get('titulo', '?')} de {c.get('artista', '?')}" for c in canciones]
+        [f"- {c.get('titulo')} de {c.get('artista')}" for c in canciones]
     )
 
-    prompt_msg = (
-        f"Para cada canción de la siguiente lista, estima un BPM realista "
-        f"(entre 80 y 180) y su tonalidad musical.\n\n"
-        f"{lista_canciones}\n\n"
-        f"Devuelve SOLO un JSON array como este ejemplo:\n"
-        f'[{{"titulo":"nombre","bpm":128,"key":"Am"}}]\n'
-        f"Cada canción debe tener valores distintos y coherentes."
-    )
+    prompt_msg = f"""
+Devuelve SOLO un JSON array como este ejemplo:
+
+[
+  {{"bpm":120,"key":"Am"}}
+]
+
+Reglas:
+- No expliques nada.
+- No añadas texto fuera del JSON.
+- Devuelve exactamente el mismo número de canciones.
+- Mantén el mismo orden.
+- BPM entre 80 y 180.
+
+Canciones:
+{lista_canciones}
+"""
 
     try:
         with httpx.Client(timeout=30.0) as client:
@@ -88,7 +99,7 @@ def analizar_bpm_batch(canciones: List[dict]) -> List[dict]:
                     "messages": [
                         {"role": "user", "content": prompt_msg}
                     ],
-                    "temperature": 0.5,
+                    "temperature": 0.4,
                 },
             )
             response.raise_for_status()
@@ -105,15 +116,18 @@ def analizar_bpm_batch(canciones: List[dict]) -> List[dict]:
         match = re.search(r'\[.*\]', text, re.DOTALL)
         if match:
             parsed = json.loads(match.group())
-            if isinstance(parsed, list):
-                return parsed
+
+            # Si el modelo devuelve menos elementos, rellenamos
+            if len(parsed) < len(canciones):
+                for _ in range(len(canciones) - len(parsed)):
+                    parsed.append({"bpm": 0, "key": "Unknown"})
+
+            return parsed
 
     except Exception as e:
         print("ERROR BPM:", e)
 
-    return [{"titulo": c.get("titulo", ""), "bpm": 0, "key": "Unknown"} for c in canciones]
-
-
+    return [{"bpm": 0, "key": "Unknown"} for _ in canciones]
 # ==============================
 # TOOL 3: Curador musical (Cohere v2)
 # ==============================
