@@ -189,6 +189,8 @@ async def run_agent(genero: str, vibe: str):
 
                     async def transcribir_step(state: AgentState):
                         print("--- DESCARGANDO Y TRANSCRIBIENDO PREVIEWS (WHISPER) ---")
+                        run_dir_name = f"setlist_{state['genero']}_{state['vibe'].replace(' ', '_')}"
+                        run_output_dir = str(Path(output_dir) / run_dir_name)
                         canciones = []
                         for cancion in state['canciones_enriquecidas']:
                             if isinstance(cancion, str):
@@ -202,7 +204,7 @@ async def run_agent(genero: str, vibe: str):
                                             "preview_url": url, 
                                             "artista": cancion.get("artista", "Unknown"), 
                                             "titulo": cancion.get("titulo", "Unknown"),
-                                            "output_dir": output_dir
+                                            "output_dir": run_output_dir
                                         }
                                     )
                                     parsed = json.loads(res.content[0].text)
@@ -241,8 +243,12 @@ async def run_agent(genero: str, vibe: str):
                     async def guardar_step(state: AgentState):
                         print("--- GUARDANDO ARCHIVO .M3U (via Filesystem MCP) ---")
                         
-                        nombre_archivo = f"setlist_{state['genero']}_{state['vibe'].replace(' ', '_')}.m3u"
-                        ruta_completa = str(Path(output_dir) / nombre_archivo)
+                        run_dir_name = f"setlist_{state['genero']}_{state['vibe'].replace(' ', '_')}"
+                        run_output_dir = str(Path(output_dir) / run_dir_name)
+                        os.makedirs(run_output_dir, exist_ok=True)
+                        
+                        nombre_archivo = f"{run_dir_name}.m3u"
+                        ruta_completa = str(Path(run_output_dir) / nombre_archivo)
                         contenido = "#EXTM3U\n"
                         for c in state['setlist_final']:
                             contenido += f"#EXTINF:-1,{c.get('artista')} - {c.get('titulo')} (BPM: {c.get('bpm', 'N/A')})\n"
