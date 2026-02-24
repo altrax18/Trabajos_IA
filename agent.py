@@ -15,6 +15,7 @@ class AgentState(TypedDict):
     vibe: str
     canciones_encontradas: List[dict]
     canciones_enriquecidas: List[dict]
+    canciones_locales: List[dict]
     setlist_final: List[dict]
     archivo_guardado: str
 
@@ -186,11 +187,45 @@ async def run_agent(genero: str, vibe: str):
                             canciones_con_preview.append(cancion)
                         return {"canciones_enriquecidas": canciones_con_preview}
 
+                    async def transcribir_step(state: AgentState):
+                        print("--- DESCARGANDO Y TRANSCRIBIENDO PREVIEWS (WHISPER) ---")
+                        run_dir_name = f"setlist_{state['genero']}_{state['vibe'].replace(' ', '_')}"
+                        run_output_dir = str(Path(output_dir) / run_dir_name)
+                        canciones = []
+                        for cancion in state['canciones_enriquecidas']:
+                            if isinstance(cancion, str):
+                                cancion = json.loads(cancion)
+                            url = cancion.get("preview_url")
+                            if url:
+                                try:
+                                    res = await music_session.call_tool(
+                                        "descargar_y_transcribir", 
+                                        arguments={
+                                            "preview_url": url, 
+                                            "artista": cancion.get("artista", "Unknown"), 
+                                            "titulo": cancion.get("titulo", "Unknown"),
+                                            "output_dir": run_output_dir
+                                        }
+                                    )
+                                    parsed = json.loads(res.content[0].text)
+                                    cancion["letra"] = parsed.get("letra", "")
+                                    cancion["ruta_local"] = parsed.get("ruta_local", "")
+                                    print(f"  ✓ Transcrito y guardado local: {cancion.get('titulo')}")
+                                except Exception as e:
+                                    print(f"  Error transcribiendo {cancion.get('titulo')}: {e}")
+                                    cancion["letra"] = ""
+                                    cancion["ruta_local"] = ""
+                            else:
+                                cancion["letra"] = ""
+                                cancion["ruta_local"] = ""
+                            canciones.append(cancion)
+                        return {"canciones_locales": canciones}
+
                     async def curar_step(state: AgentState):
                         print(f"--- CURANDO LISTA CON VIBE: {state['vibe']} ---")
                         try:
                             result = await music_session.call_tool("curador_musical", arguments={
-                                "canciones": state['canciones_enriquecidas'], 
+                                "canciones": state['canciones_locales'], 
                                 "vibe": state['vibe']
                             })
                             curada = []
@@ -203,19 +238,25 @@ async def run_agent(genero: str, vibe: str):
                             return {"setlist_final": curada}
                         except Exception as e:
                             print(f"Error curando lista: {e}")
-                            return {"setlist_final": state['canciones_enriquecidas']}
+                            return {"setlist_final": state['canciones_locales']}
 
                     async def guardar_step(state: AgentState):
                         print("--- GUARDANDO ARCHIVO .M3U (via Filesystem MCP) ---")
                         
-                        nombre_archivo = f"setlist_{state['genero']}_{state['vibe'].replace(' ', '_')}.m3u"
-                        ruta_completa = str(Path(output_dir) / nombre_archivo)
+                        run_dir_name = f"setlist_{state['genero']}_{state['vibe'].replace(' ', '_')}"
+                        run_output_dir = str(Path(output_dir) / run_dir_name)
+                        os.makedirs(run_output_dir, exist_ok=True)
+                        
+                        nombre_archivo = f"{run_dir_name}.m3u"
+                        ruta_completa = str(Path(run_output_dir) / nombre_archivo)
                         contenido = "#EXTM3U\n"
                         for c in state['setlist_final']:
                             contenido += f"#EXTINF:-1,{c.get('artista')} - {c.get('titulo')} (BPM: {c.get('bpm', 'N/A')})\n"
-                            preview = c.get('preview_url', '')
-                            if preview:
-                                contenido += f"{preview}\n"
+                            ruta_local = c.get('ruta_local', '')
+                            if ruta_local:
+                                # Usar solo el nombre del archivo si esta en el mismo dir
+                                nombre_audio = os.path.basename(ruta_local)
+                                contenido += f"{nombre_audio}\n"
                             else:
                                 contenido += f"# Sin preview disponible: {c.get('titulo')}.mp3\n"
                         
@@ -244,20 +285,22 @@ async def run_agent(genero: str, vibe: str):
                     workflow.add_node("buscar", buscar_step)
                     workflow.add_node("enriquecer", enriquecer_step)
                     workflow.add_node("preview", preview_step)
+                    workflow.add_node("transcribir", transcribir_step)
                     workflow.add_node("curar", curar_step)
                     workflow.add_node("guardar", guardar_step)
                     
                     workflow.add_edge(START, "buscar")
                     workflow.add_edge("buscar", "enriquecer")
                     workflow.add_edge("enriquecer", "preview")
-                    workflow.add_edge("preview", "curar")
+                    workflow.add_edge("preview", "transcribir")
+                    workflow.add_edge("transcribir", "curar")
                     workflow.add_edge("curar", "guardar")
                     workflow.add_edge("guardar", END)
                     
                     app = workflow.compile()
                     
                     # --- Ejecución ---
-                    inputs = {"genero": genero, "vibe": vibe, "canciones_encontradas": [], "canciones_enriquecidas": [], "setlist_final": [], "archivo_guardado": ""}
+                    inputs = {"genero": genero, "vibe": vibe, "canciones_encontradas": [], "canciones_enriquecidas": [], "canciones_locales": [], "setlist_final": [], "archivo_guardado": ""}
                     final_state = await app.ainvoke(inputs)
                     
                     return final_state

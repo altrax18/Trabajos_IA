@@ -70,26 +70,61 @@ if st.button("🎛️ Generar Setlist", type="primary"):
                         st.markdown(f"**{i}. {c['titulo']}** - {c['artista']}")
                         st.caption(f"BPM: {c.get('bpm', 'N/A')} | Key: {c.get('key', 'N/A')} | Género: {c['genero']}")
                     with col_audio:
-                        preview_url = c.get('preview_url', '')
-                        if preview_url:
-                            st.audio(preview_url, format="audio/mp4")
+                        ruta_local = c.get('ruta_local', '')
+                        if ruta_local and os.path.exists(ruta_local):
+                            st.audio(ruta_local, format="audio/mp4")
                         else:
-                            st.caption("🔇 Sin preview disponible")
+                            preview_url = c.get('preview_url', '')
+                            if preview_url:
+                                st.audio(preview_url, format="audio/mp4")
+                            else:
+                                st.caption("🔇 Sin preview disponible")
+                        
+                        letra = c.get('letra', '')
+                        if letra:
+                            with st.expander("Ver Letra (Generada con Whisper)"):
+                                st.text(letra)
                 
                 st.divider()
                 st.success(f"Archivo guardado en: `{final_state.get('archivo_guardado')}`")
                 
-                # Opción para descargar (leemos el archivo generado)
+                import zipfile
+                import io
+
                 archivo_path = final_state.get("archivo_guardado")
                 if archivo_path and os.path.exists(archivo_path):
-                    with open(archivo_path, "r") as f:
-                        file_content = f.read()
+                    # Crear archivo ZIP en memoria
+                    zip_buffer = io.BytesIO()
+                    
+                    with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
+                        # 1. Añadir el archivo .m3u
+                        zip_file.write(archivo_path, os.path.basename(archivo_path))
+                        
+                        # 2. Añadir todas las canciones y letras de la lista
+                        for c in canciones:
+                            ruta_local = c.get('ruta_local', '')
+                            if ruta_local and os.path.exists(ruta_local):
+                                # Añadir audio
+                                zip_file.write(ruta_local, os.path.basename(ruta_local))
+                                
+                                # Intentar añadir el archivo de subtítulos .srt
+                                base_name, _ = os.path.splitext(ruta_local)
+                                ruta_srt = base_name + ".srt"
+                                if os.path.exists(ruta_srt):
+                                    zip_file.write(ruta_srt, os.path.basename(ruta_srt))
+                    
+                    # Preparar buffer para descarga
+                    zip_buffer.seek(0)
+                    nombre_zip = os.path.basename(archivo_path).replace('.m3u', '.zip')
+                    
                     st.download_button(
-                        label="💾 Descargar .m3u",
-                        data=file_content,
-                        file_name=os.path.basename(archivo_path),
-                        mime="audio/x-mpegurl"
+                        label=" Descargar Setlist Completo (.ZIP)",
+                        data=zip_buffer,
+                        file_name=nombre_zip,
+                        mime="application/zip",
+                        help="Descarga el M3U junto con todos los audios y letras generadas para abrir en VLC."
                     )
+
 
         except Exception as e:
             st.error(f"Ocurrió un error: {e}")
