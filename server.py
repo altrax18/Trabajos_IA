@@ -1,12 +1,7 @@
-# -*- coding: utf-8 -*-
-import json
-import os
-import re
+import json, re, httpx, whisper, os, sys
 from typing import List
-import httpx
 from dotenv import load_dotenv, find_dotenv
 from mcp.server.fastmcp import FastMCP
-import whisper
 
 load_dotenv(find_dotenv())
 
@@ -14,17 +9,91 @@ mcp = FastMCP("Setlist Architect Music Server")
 
 # Cargar el modelo de Whisper (puede tomar unos segundos la primera vez)
 try:
-    print("Cargando modelo Whisper 'base'...")
+    print("Cargando modelo Whisper 'base'...", file=sys.stderr)
     whisper_model = whisper.load_model("base")
-    print("Modelo Whisper cargado correctamente.")
+    print("Modelo Whisper cargado correctamente.", file=sys.stderr)
 except Exception as e:
-    print(f"Error cargando Whisper: {e}")
+    print(f"Error cargando Whisper: {e}", file=sys.stderr)
     whisper_model = None
+# ==============================
+# TOOL 0: Generar término de búsqueda para iTunes
+# ==============================
+@mcp.tool()
+def generar_terminos_busqueda(genero: str, vibe: str, cantidad: int = 8) -> List[str]:
+    """
+    Usa el LLM para generar términos de búsqueda inteligentes (artista + canción)
+    que se ajusten al género y vibe indicados, en lugar de buscar literalmente
+    los campos introducidos por el usuario.
+    """
+    api_key = os.getenv("COHERE_API_KEY")
 
+    if not api_key:
+        # Fallback básico si no hay API key
+        return [f"{genero} {vibe}"]
 
-load_dotenv(find_dotenv())
+    prompt_msg = f"""
+    Eres un experto en música. Tu misión es generar una playlist para el usuario basada en estas dos criterios:
+    - Género: '{genero}'
+    - Vibe: '{vibe}'
 
-mcp = FastMCP("Setlist Architect Music Server")
+    Ambos criterios son igual de importantes y deben cumplirse simultáneamente.
+    El género define el estilo musical: estilo, instrumentación, estructura, subgénero.
+    El vibe define la temática, el tempo, la energía y el enfoque emocional dentro de ese género.
+    
+    Debes elegir artistas cuya música, temática y estilo encajen específicamente con ambos criterios,
+    no simplemente los más populares del género.
+
+    Genera exactamente {cantidad} términos de búsqueda para iTunes.
+    Cada término debe ser SOLO el nombre del artista, o "Artista Album" si conoces un álbum 
+    real que encaje especialmente bien con el vibe pedido.
+    NO inventes títulos de canciones ni álbumes. Es mejor un término simple que uno inventado.
+
+    Reglas:
+    - Devuelve SOLO un JSON array de strings. Sin explicaciones, sin texto extra.
+    - Prioriza artistas cuya temática, letra o sonido conecte directamente con '{vibe}'.
+    - Usa artistas reales y reconocibles.
+    - Varía los artistas, no repitas el mismo más de una vez.
+    - Evita elegir siempre los artistas más obvios o mainstream del género si no encajan con el vibe.
+    - Usa SOLO el nombre del artista o banda. Nunca uses nombres que puedan confundirse 
+      con títulos de canciones de otros géneros (ej: evita términos genéricos como 
+      "Death", "Poison", "Warrant" si pueden coincidir con canciones de otros estilos).
+    - Si el nombre del artista es ambiguo, añade una palabra del álbum más conocido para 
+      dar contexto (ej: "Death Symbolic" en lugar de solo "Death").
+    """
+
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            response = client.post(
+                "https://api.cohere.com/v2/chat",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "command-a-03-2025",
+                    "messages": [{"role": "user", "content": prompt_msg}],
+                    "temperature": 0.7,
+                },
+            )
+            response.raise_for_status()
+
+        data = response.json()
+        content_blocks = data.get("message", {}).get("content", [])
+        text = "".join(b.get("text", "") for b in content_blocks if b.get("type") == "text")
+
+        match = re.search(r'\[.*\]', text, re.DOTALL)
+        if match:
+            terminos = json.loads(match.group())
+            if isinstance(terminos, list) and terminos:
+                print(f"Términos generados: {terminos}", file=sys.stderr)
+                return terminos
+
+    except Exception as e:
+        print(f"ERROR generar_terminos_busqueda: {e}", file=sys.stderr)
+
+    # Fallback si el LLM falla
+    return [f"{genero} {vibe}"]
+
 
 # ==============================
 # TOOL 1: Buscar canciones iTunes
@@ -32,8 +101,11 @@ mcp = FastMCP("Setlist Architect Music Server")
 @mcp.tool()
 def buscar_canciones_api_externa(termino: str, limite: int = 5) -> List[dict]:
     url = "https://itunes.apple.com/search"
-    params = {"term": termino, "media": "music", "limit": int(limite)}
-
+    params = {"term": termino,
+              "media": "music",
+              "limit": int(limite),
+              "attribute": "artistTerm"
+            }
     try:
         with httpx.Client(timeout=10.0) as client:
             response = client.get(url, params=params)
@@ -63,15 +135,12 @@ def buscar_canciones_api_externa(termino: str, limite: int = 5) -> List[dict]:
         return list(unique.values())
 
     except Exception as e:
-        print("ERROR ITUNES:", e)
+        print("ERROR ITUNES:", e, file=sys.stderr)
         return []
-
 
 # ==============================
 # TOOL 2: Analizar BPM (Cohere v2)
 # ==============================
-@mcp.tool()
-
 @mcp.tool()
 def analizar_bpm_batch(canciones: List[dict]) -> List[dict]:
     api_key = os.getenv("COHERE_API_KEY")
@@ -84,22 +153,31 @@ def analizar_bpm_batch(canciones: List[dict]) -> List[dict]:
     )
 
     prompt_msg = f"""
-Devuelve SOLO un JSON array como este ejemplo:
+    Eres un experto en musicología y análisis musical. Para cada canción de la lista, estima su BPM real 
+    y su tonalidad (key) basándote en tu conocimiento de la canción y el estilo del artista.
 
-[
-  {{"bpm":120,"key":"Am"}}
-]
+    Devuelve SOLO un JSON array con exactamente {len(canciones)} objetos, en el mismo orden que la lista.
+    Cada objeto debe tener exactamente estos dos campos:
+    - "bpm": número entero con el BPM real o estimado de la canción
+    - "key": tonalidad en formato anglosajón (ej: "Am", "C#", "Dm", "G", "F#m"...)
 
-Reglas:
-- No expliques nada.
-- No añadas texto fuera del JSON.
-- Devuelve exactamente el mismo número de canciones.
-- Mantén el mismo orden.
-- BPM entre 80 y 180.
+    El BPM debe reflejar el tempo real de la canción:
+    - No apliques ningún rango mínimo ni máximo artificial.
+    - Una balada lenta puede estar en 50-70 BPM, un tema de Drum & Bass en 170-180 BPM.
+    - Si conoces el BPM exacto de la canción, úsalo. Si no, estima uno coherente con 
+    el género, la energía y el estilo del artista.
 
-Canciones:
-{lista_canciones}
-"""
+    Canciones a analizar (en este orden exacto):
+    {lista_canciones}
+
+    Responde ÚNICAMENTE con el JSON array. Sin explicaciones, sin texto adicional, sin markdown.
+    Ejemplo de formato esperado para 3 canciones:
+    [
+    {{"bpm": 133, "key": "Am"}},
+    {{"bpm": 72, "key": "F#m"}},
+    {{"bpm": 165, "key": "Dm"}}
+    ]
+    """
 
     try:
         with httpx.Client(timeout=30.0) as client:
@@ -110,11 +188,11 @@ Canciones:
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": "command-r7b-12-2024",
+                    "model": "command-a-03-2025",
                     "messages": [
                         {"role": "user", "content": prompt_msg}
                     ],
-                    "temperature": 0.4,
+                    "temperature": 0.0,
                 },
             )
             response.raise_for_status()
@@ -140,7 +218,7 @@ Canciones:
             return parsed
 
     except Exception as e:
-        print("ERROR BPM:", e)
+        print("ERROR BPM:", e, file=sys.stderr)
 
     return [{"bpm": 0, "key": "Unknown"} for _ in canciones]
 # ==============================
@@ -167,11 +245,11 @@ def _curar_con_llm(canciones: List[dict], vibe: str) -> List[dict]:
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": "command-r7b-12-2024",
+                    "model": "command-a-03-2025",
                     "messages": [
                         {"role": "user", "content": prompt_msg}
                     ],
-                    "temperature": 0.3,
+                    "temperature": 0.2,
                 },
             )
             response.raise_for_status()
@@ -198,7 +276,7 @@ def _curar_con_llm(canciones: List[dict], vibe: str) -> List[dict]:
             return ordered
 
     except Exception as e:
-        print("ERROR CURADOR:", e)
+        print("ERROR CURADOR:", e, file=sys.stderr)
 
     return canciones
 
@@ -267,21 +345,28 @@ def descargar_y_transcribir(preview_url: str, artista: str, titulo: str, output_
         return {"letra": letra_completa, "ruta_local": ruta_mp3}
         
     except Exception as e:
-        print(f"Error en descargar_y_transcribir: {e}")
+        print(f"Error en descargar_y_transcribir: {e}", file=sys.stderr)
         # Si falló, al menos no rompemos el agente
         return {"letra": "Error generando letra", "ruta_local": ""}
 
+# ==============================
+# Integración con VLC Player
+# ==============================
 
-
+@mcp.tool()
+def reproducir_lista_m3u(ruta_m3u: str) -> str:
+    """
+    Valida que el archivo .m3u existe y devuelve su ruta absoluta.
+    El lanzamiento real de VLC se delega al proceso cliente para evitar
+    problemas de job objects en Windows.
+    """
+    if not ruta_m3u or not os.path.exists(ruta_m3u):
+        return f"ERROR: Archivo no encontrado en {ruta_m3u}"
+    
+    return f"OK:{os.path.abspath(ruta_m3u)}"
+ 
 # ==============================
 # TRANSPORTES
 # ==============================
 if __name__ == "__main__":
-    import sys
-
-    if "http" in sys.argv:
-        print("Iniciando servidor MCP streamable-http en puerto 8000...")
-        mcp.run(transport="streamable-http")
-    else:
-        print("Iniciando servidor MCP stdio...", file=sys.stderr)
-        mcp.run(transport="stdio")
+    mcp.run(transport="stdio")

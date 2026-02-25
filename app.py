@@ -1,11 +1,9 @@
+import asyncio, os, time
 import streamlit as st
-import asyncio
-import os
-import sys
 from agent import run_agent
 
 
-def _run_agent_safely(genero: str, vibe: str):
+def _run_agent_safely(genero: str, vibe: str, vlc: bool):
     """
     Ejecuta el agente MCP de forma segura dentro de Streamlit.
     Crea un event loop nuevo para evitar conflictos con el loop de Streamlit.
@@ -13,7 +11,7 @@ def _run_agent_safely(genero: str, vibe: str):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        return loop.run_until_complete(run_agent(genero, vibe))
+        return loop.run_until_complete(run_agent(genero, vibe, vlc))
     finally:
         loop.close()
 
@@ -37,11 +35,16 @@ with st.sidebar:
     st.write("- Streamlit")
 
 # Formulario de entrada
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns([2,2,1])
 with col1:
     genero = st.text_input("Género musical", placeholder="Ej: Rock, Pop, Jazz, Techno, K-Pop...")
 with col2:
     vibe = st.text_input("Define el Vibe / Objetivo", placeholder="Ej: High Energy Workout, Chill Sunday...")
+with col3:
+    st.write("")
+    st.write("")
+    vlc = st.toggle("VLC Autoplay", value=True, help="Si está activado," \
+    " el grafo se ejecuta en modo reproducción.")
 
 # Botón de acción
 if st.button("🎛️ Generar Setlist", type="primary"):
@@ -53,8 +56,7 @@ if st.button("🎛️ Generar Setlist", type="primary"):
         
         try:
             # Ejecutar el agente de forma segura (parcheando stderr para MCP stdio)
-            final_state = _run_agent_safely(genero, vibe)
-            
+            final_state = _run_agent_safely(genero, vibe, vlc)
             # Mostrar resultados
             status_text.success("¡Setlist generado con éxito!")
             
@@ -119,7 +121,7 @@ if st.button("🎛️ Generar Setlist", type="primary"):
                     
                     st.download_button(
                         label=" Descargar Setlist Completo (.ZIP)",
-                        data=zip_buffer,
+                        data=zip_buffer.getvalue(),
                         file_name=nombre_zip,
                         mime="application/zip",
                         help="Descarga el M3U junto con todos los audios y letras generadas para abrir en VLC."
